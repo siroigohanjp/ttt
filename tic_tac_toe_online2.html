@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TTT Online - Chat Edition</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background: radial-gradient(circle at center, #0f172a 0%, #020617 100%);
+            color: #f8fafc;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0;
+            overflow-x: hidden;
+        }
+        .glass-panel {
+            background: rgba(30, 41, 59, 0.7);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+        }
+        .cell {
+            aspect-ratio: 1 / 1;
+            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+            font-size: 2.5rem;
+            font-weight: bold;
+        }
+        .cell:hover:not(.occupied):not(.disabled) {
+            background: rgba(255, 255, 255, 0.05);
+            transform: scale(0.98);
+        }
+        .symbol-o { color: #38bdf8; filter: drop-shadow(0 0 10px rgba(56, 189, 248, 0.6)); }
+        .symbol-x { color: #fb7185; filter: drop-shadow(0 0 10px rgba(251, 113, 133, 0.6)); }
+        
+        .chat-history::-webkit-scrollbar { width: 4px; }
+        .chat-history::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 10px; }
+        
+        @keyframes popIn {
+            0% { transform: scale(0.5); opacity: 0; }
+            100% { transform: scale(1); opacity: 1; }
+        }
+        .animate-pop { animation: popIn 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275); }
+        .win-line { background: rgba(255, 255, 255, 0.15) !important; transform: scale(1.05); border: 2px solid rgba(255,255,255,0.2); }
+        .hidden-screen { display: none !important; }
+        
+        .room-item:hover { background: rgba(255, 255, 255, 0.1); border-color: rgba(56, 189, 248, 0.4); }
+
+        .loader {
+            width: 12px; height: 12px;
+            border: 2px solid #38bdf8; border-bottom-color: transparent;
+            border-radius: 50%; display: inline-block;
+            animation: rotation 1s linear infinite;
+        }
+        @keyframes rotation { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+
+<div class="w-full max-w-5xl px-4 py-8">
+    <!-- ロビー画面 -->
+    <div id="lobby-screen" class="max-w-md mx-auto glass-panel p-8 rounded-3xl text-center space-y-6">
+        <div>
+            <h1 class="text-3xl font-black bg-clip-text text-transparent bg-gradient-to-r from-sky-400 to-indigo-500">
+                TTT CHAT LOBBY
+            </h1>
+            <p class="text-slate-400 text-xs mt-1">チャット機能付きオンライン対戦</p>
+        </div>
+
+        <div class="space-y-4">
+            <div class="space-y-2">
+                <input type="text" id="room-name-input" placeholder="あなたの名前" 
+                    class="w-full bg-slate-900/50 border border-slate-700 p-3 rounded-xl text-center focus:outline-none focus:ring-2 focus:ring-sky-500 transition">
+                <button id="create-room-btn" disabled class="w-full py-4 bg-slate-700 text-slate-400 font-bold rounded-xl transition cursor-not-allowed">
+                    <span class="loader mr-2"></span> サーバー接続中...
+                </button>
+            </div>
+
+            <div class="relative py-2">
+                <div class="absolute inset-0 flex items-center"><div class="w-full border-t border-slate-700"></div></div>
+                <div class="relative flex justify-center text-xs uppercase"><span class="bg-[#0f172a] px-2 text-slate-500">または</span></div>
+            </div>
+
+            <div class="text-left space-y-3">
+                <div class="flex justify-between items-center px-1">
+                    <h3 class="text-[10px] font-bold text-slate-500 uppercase tracking-widest">待機中のプレイヤー</h3>
+                    <span id="scan-status" class="text-[10px] text-sky-500">スキャン中...</span>
+                </div>
+                <div id="room-list" class="space-y-2 min-h-[100px]">
+                    <div class="text-center py-6 text-slate-600 text-xs italic">空いている部屋を探しています...</div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="text-[10px] text-slate-500 flex justify-between items-center pt-2">
+            <p id="network-status">接続準備中...</p>
+            <button onclick="location.reload()" class="underline hover:text-slate-300">リスト更新</button>
+        </div>
+    </div>
+
+    <!-- ゲーム＋チャット画面 -->
+    <div id="game-screen" class="hidden-screen grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <!-- 左側：ゲームボード -->
+        <div class="lg:col-span-2 glass-panel p-6 rounded-3xl space-y-6">
+            <div class="flex justify-between items-center bg-slate-900/40 p-4 rounded-2xl border border-white/5">
+                <div class="text-left">
+                    <h2 class="text-[10px] font-bold text-slate-500 uppercase">Room</h2>
+                    <p id="display-room-name" class="text-sm font-bold text-sky-400 truncate w-32">---</p>
+                </div>
+                <div class="text-center">
+                    <h2 class="text-[10px] font-bold text-slate-500 uppercase">Role</h2>
+                    <p id="display-role" class="text-xl font-black text-white">-</p>
+                </div>
+                <div class="text-right">
+                    <h2 class="text-[10px] font-bold text-slate-500 uppercase">Opponent</h2>
+                    <div id="opponent-status" class="text-[10px] text-rose-400 font-bold uppercase">Waiting</div>
+                </div>
+            </div>
+
+            <div class="h-8 flex items-center justify-center">
+                <p id="status-text" class="text-slate-200 font-bold text-sm tracking-wide">対戦相手を待っています...</p>
+            </div>
+
+            <div class="flex justify-center">
+                <div id="board" class="grid grid-cols-3 gap-3 bg-slate-800/30 p-3 rounded-2xl border border-white/5 pointer-events-none opacity-50 transition-all w-full max-w-[320px]">
+                    <button class="cell glass-panel rounded-xl flex items-center justify-center" data-index="0"></button>
+                    <button class="cell glass-panel rounded-xl flex items-center justify-center" data-index="1"></button>
+                    <button class="cell glass-panel rounded-xl flex items-center justify-center" data-index="2"></button>
+                    <button class="cell glass-panel rounded-xl flex items-center justify-center" data-index="3"></button>
+                    <button class="cell glass-panel rounded-xl flex items-center justify-center" data-index="4"></button>
+                    <button class="cell glass-panel rounded-xl flex items-center justify-center" data-index="5"></button>
+                    <button class="cell glass-panel rounded-xl flex items-center justify-center" data-index="6"></button>
+                    <button class="cell glass-panel rounded-xl flex items-center justify-center" data-index="7"></button>
+                    <button class="cell glass-panel rounded-xl flex items-center justify-center" data-index="8"></button>
+                </div>
+            </div>
+
+            <div class="flex gap-4">
+                <button id="reset-btn" class="flex-1 py-3 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-xl transition hidden">再戦する</button>
+                <button id="leave-btn" class="flex-1 py-3 text-slate-500 bg-white/5 hover:bg-white/10 rounded-xl text-xs transition font-bold">ロビーに戻る</button>
+            </div>
+        </div>
+
+        <!-- 右側：チャット -->
+        <div class="lg:col-span-1 glass-panel p-4 rounded-3xl flex flex-col h-[400px] lg:h-auto">
+            <h3 class="text-xs font-bold text-slate-500 uppercase tracking-widest mb-3 px-2">Realtime Chat</h3>
+            <div id="chat-history" class="chat-history flex-1 overflow-y-auto space-y-3 px-2 mb-4">
+                <div class="text-[10px] text-center text-slate-600 italic">対戦相手とメッセージをやり取りできます</div>
+            </div>
+            <div class="relative">
+                <input type="text" id="chat-input" placeholder="メッセージを入力..." 
+                    class="w-full bg-slate-900/50 border border-slate-700 p-3 pr-12 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 transition">
+                <button id="send-btn" class="absolute right-2 top-2 bottom-2 px-3 bg-sky-600 hover:bg-sky-500 rounded-lg text-white font-bold transition active:scale-95 text-xs">送信</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    const lobbyScreen = document.getElementById('lobby-screen');
+    const gameScreen = document.getElementById('game-screen');
+    const roomNameInput = document.getElementById('room-name-input');
+    const createRoomBtn = document.getElementById('create-room-btn');
+    const roomListEl = document.getElementById('room-list');
+    const scanStatus = document.getElementById('scan-status');
+    const statusText = document.getElementById('status-text');
+    const displayRoomName = document.getElementById('display-room-name');
+    const displayRole = document.getElementById('display-role');
+    const opponentStatus = document.getElementById('opponent-status');
+    const boardEl = document.getElementById('board');
+    const cells = document.querySelectorAll('.cell');
+    const resetBtn = document.getElementById('reset-btn');
+    const leaveBtn = document.getElementById('leave-btn');
+    
+    // Chat DOM
+    const chatHistory = document.getElementById('chat-history');
+    const chatInput = document.getElementById('chat-input');
+    const sendBtn = document.getElementById('send-btn');
+
+    let peer = null;
+    let conn = null;
+    let myRole = null;
+    let myName = "あなた";
+    let board = Array(9).fill('');
+    let currentTurn = 'O';
+    let isGameActive = false;
+
+    const SLOT_PREFIX = "ttt-chat-slot-";
+    const MAX_SLOTS = 6;
+
+    function init() {
+        peer = new Peer();
+        peer.on('open', (id) => {
+            document.getElementById('network-status').innerText = "オンライン";
+            document.getElementById('network-status').classList.add('text-emerald-400');
+            createRoomBtn.disabled = false;
+            createRoomBtn.className = "w-full py-4 bg-sky-600 hover:bg-sky-500 text-white font-bold rounded-xl transition active:scale-95 shadow-lg";
+            createRoomBtn.innerText = "新しく対戦を待つ";
+            scanRooms();
+        });
+
+        peer.on('connection', (incomingConn) => {
+            if (conn) { incomingConn.close(); return; }
+            conn = incomingConn;
+            myRole = 'O';
+            setupGameConnection();
+            enterGameUI();
+        });
+
+        peer.on('error', (err) => {
+            if(err.type === 'id-taken') { location.reload(); }
+        });
+    }
+
+    async function scanRooms() {
+        roomListEl.innerHTML = '';
+        scanStatus.innerText = "スキャン中...";
+        let found = 0;
+        for (let i = 1; i <= MAX_SLOTS; i++) {
+            const targetId = SLOT_PREFIX + i;
+            const checkConn = peer.connect(targetId, { reliable: true });
+            const timeout = setTimeout(() => checkConn.close(), 1500);
+            checkConn.on('open', () => {
+                clearTimeout(timeout);
+                addRoomToList(targetId, "対戦待ちのプレイヤー", i);
+                found++;
+                checkConn.close();
+                updateScanStatus(found);
+            });
+        }
+        setTimeout(() => {
+            if (found === 0) {
+                roomListEl.innerHTML = '<div class="text-center py-6 text-slate-500 text-xs italic">待機中のプレイヤーはいません</div>';
+                scanStatus.innerText = "完了";
+            }
+        }, 2000);
+    }
+
+    function updateScanStatus(count) { scanStatus.innerText = `${count}件発見`; }
+
+    function addRoomToList(id, name, slotNum) {
+        if (document.querySelector(`[data-slot="${slotNum}"]`)) return;
+        const div = document.createElement('div');
+        div.className = "room-item bg-slate-900/40 p-4 rounded-xl flex justify-between items-center cursor-pointer animate-pop border border-white/5 transition-all";
+        div.setAttribute('data-slot', slotNum);
+        div.innerHTML = `<div class="text-left"><p class="text-sm font-bold text-slate-200">Player ${slotNum}</p><p class="text-[10px] text-sky-500">対戦準備完了</p></div><span class="text-xs font-bold text-sky-400">参加する →</span>`;
+        div.onclick = () => joinRoom(id, `Player ${slotNum}`);
+        if (roomListEl.querySelector('.italic')) roomListEl.innerHTML = '';
+        roomListEl.appendChild(div);
+    }
+
+    createRoomBtn.onclick = async () => {
+        myName = roomNameInput.value.trim() || "名無しのプレイヤー";
+        createRoomBtn.disabled = true;
+        createRoomBtn.innerText = "空きスロットを探しています...";
+        peer.destroy();
+        for(let i=1; i <= MAX_SLOTS; i++) {
+            const success = await tryBecomeHost(SLOT_PREFIX + i, myName);
+            if(success) return;
+        }
+        alert("ロビーが満員です。");
+        location.reload();
+    };
+
+    function tryBecomeHost(targetId, name) {
+        return new Promise((resolve) => {
+            const newPeer = new Peer(targetId);
+            newPeer.on('open', () => {
+                peer = newPeer;
+                myRole = 'O';
+                displayRoomName.innerText = name;
+                enterGameUI();
+                peer.on('connection', (incomingConn) => {
+                    conn = incomingConn;
+                    setupGameConnection();
+                });
+                resolve(true);
+            });
+            newPeer.on('error', (err) => { if(err.type === 'id-taken') { newPeer.destroy(); resolve(false); } });
+        });
+    }
+
+    function joinRoom(targetPeerId, name) {
+        myName = roomNameInput.value.trim() || "参加者";
+        conn = peer.connect(targetPeerId, { reliable: true });
+        myRole = 'X';
+        displayRoomName.innerText = name;
+        setupGameConnection();
+        enterGameUI();
+    }
+
+    function setupGameConnection() {
+        const onOpen = () => {
+            isGameActive = true;
+            opponentStatus.innerText = "ONLINE";
+            opponentStatus.className = "text-[10px] text-emerald-400 font-bold uppercase";
+            boardEl.classList.remove('pointer-events-none', 'opacity-50');
+            updateTurnDisplay();
+            addChatMessage("System", "対戦が開始されました", "system");
+        };
+        if (conn.open) onOpen(); else conn.on('open', onOpen);
+
+        conn.on('data', (data) => {
+            if (data.type === 'move') applyMove(data.index, data.role);
+            else if (data.type === 'reset') localReset();
+            else if (data.type === 'chat') addChatMessage("相手", data.text, "opponent");
+        });
+
+        conn.on('close', () => {
+            statusText.innerText = "相手が退出しました";
+            opponentStatus.innerText = "OFFLINE";
+            isGameActive = false;
+            boardEl.classList.add('pointer-events-none', 'opacity-50');
+        });
+    }
+
+    // Chat Functions
+    function sendChat() {
+        const text = chatInput.value.trim();
+        if (!text || !conn || !conn.open) return;
+        conn.send({ type: 'chat', text: text });
+        addChatMessage("あなた", text, "me");
+        chatInput.value = '';
+    }
+
+    function addChatMessage(sender, text, type) {
+        const div = document.createElement('div');
+        div.className = "animate-pop flex flex-col";
+        
+        const alignment = type === 'me' ? 'items-end' : (type === 'system' ? 'items-center' : 'items-start');
+        const bgColor = type === 'me' ? 'bg-sky-600' : (type === 'system' ? 'bg-slate-700/50' : 'bg-slate-800');
+        const textColor = type === 'system' ? 'text-slate-400 text-[10px]' : 'text-white text-xs';
+        const bubbleRounding = type === 'me' ? 'rounded-l-xl rounded-tr-xl' : 'rounded-r-xl rounded-tl-xl';
+        
+        div.className = `flex flex-col ${alignment} mb-2`;
+        div.innerHTML = `
+            ${type !== 'system' ? `<span class="text-[9px] text-slate-500 mb-1 px-1">${sender}</span>` : ''}
+            <div class="${bgColor} ${textColor} ${bubbleRounding} px-3 py-2 max-w-[85%] break-words shadow-sm">
+                ${text}
+            </div>
+        `;
+        
+        chatHistory.appendChild(div);
+        chatHistory.scrollTop = chatHistory.scrollHeight;
+    }
+
+    sendBtn.onclick = sendChat;
+    chatInput.onkeydown = (e) => { if(e.key === 'Enter') sendChat(); };
+
+    // Board Logic
+    cells.forEach(cell => {
+        cell.onclick = () => {
+            const index = cell.getAttribute('data-index');
+            if (!isGameActive || currentTurn !== myRole || board[index] !== '') return;
+            applyMove(index, myRole);
+            conn.send({ type: 'move', index: index, role: myRole });
+        };
+    });
+
+    function applyMove(index, role) {
+        if (board[index] !== '') return;
+        board[index] = role;
+        const cell = cells[index];
+        cell.innerHTML = `<span class="${role === 'O' ? 'symbol-o' : 'symbol-x'} animate-pop">${role}</span>`;
+        cell.classList.add('occupied');
+        const winner = checkWinner();
+        if (winner) endGame(winner);
+        else {
+            currentTurn = (role === 'O' ? 'X' : 'O');
+            updateTurnDisplay();
+        }
+    }
+
+    function updateTurnDisplay() {
+        if (!isGameActive) return;
+        if (currentTurn === myRole) {
+            statusText.innerText = "あなたの番です";
+            statusText.className = "text-sky-400 font-bold text-sm animate-pulse";
+        } else {
+            statusText.innerText = "相手が考えています...";
+            statusText.className = "text-slate-400 text-sm";
+        }
+    }
+
+    function checkWinner() {
+        const lines = [[0,1,2],[3,4,5],[6,7,8],[0,3,6],[1,4,7],[2,5,8],[0,4,8],[2,4,6]];
+        for (let line of lines) {
+            const [a, b, c] = line;
+            if (board[a] && board[a] === board[b] && board[a] === board[c]) {
+                line.forEach(idx => cells[idx].classList.add('win-line'));
+                return board[a];
+            }
+        }
+        return board.every(c => c !== '') ? 'draw' : null;
+    }
+
+    function endGame(winner) {
+        isGameActive = false;
+        if (winner === 'draw') {
+            statusText.innerText = "引き分け！";
+            statusText.className = "text-amber-400 font-black text-xl";
+        } else {
+            const win = winner === myRole;
+            statusText.innerText = win ? "あなたの勝ち！" : "あなたの負け...";
+            statusText.className = win ? "text-emerald-400 font-black text-xl" : "text-rose-400 font-black text-xl";
+        }
+        resetBtn.classList.remove('hidden');
+    }
+
+    function enterGameUI() {
+        lobbyScreen.classList.add('hidden-screen');
+        gameScreen.classList.remove('hidden-screen');
+        displayRole.innerText = myRole === 'O' ? '○ (先攻)' : '× (後攻)';
+        displayRole.className = `text-xl font-black ${myRole === 'O' ? 'text-sky-400' : 'text-rose-400'}`;
+    }
+
+    resetBtn.onclick = () => { localReset(); if (conn) conn.send({ type: 'reset' }); };
+    function localReset() {
+        board = Array(9).fill('');
+        currentTurn = 'O';
+        isGameActive = true;
+        resetBtn.classList.add('hidden');
+        cells.forEach(cell => { cell.innerHTML = ''; cell.classList.remove('occupied', 'win-line'); });
+        updateTurnDisplay();
+        boardEl.classList.remove('pointer-events-none', 'opacity-50');
+        addChatMessage("System", "盤面がリセットされました", "system");
+    }
+
+    leaveBtn.onclick = () => location.reload();
+    window.onload = init;
+</script>
+</body>
+</html>
