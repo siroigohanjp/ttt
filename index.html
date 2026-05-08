@@ -109,7 +109,7 @@
         <div class="lg:col-span-2 glass-panel p-6 rounded-3xl space-y-6">
             <div class="flex justify-between items-center bg-slate-900/40 p-4 rounded-2xl border border-white/5">
                 <div class="text-left">
-                    <h2 class="text-[10px] font-bold text-slate-500 uppercase">Room</h2>
+                    <h2 class="text-[10px] font-bold text-slate-500 uppercase">Room Host</h2>
                     <p id="display-room-name" class="text-sm font-bold text-sky-400 truncate w-32">---</p>
                 </div>
                 <div class="text-center">
@@ -208,12 +208,18 @@
             if (conn) { incomingConn.close(); return; }
             conn = incomingConn;
             myRole = 'O';
+            
+            // 接続されたらすぐに自分の名前を相手に伝える
+            conn.on('open', () => {
+                conn.send({ type: 'host-info', name: myName });
+            });
+
             setupGameConnection();
             enterGameUI();
         });
 
         peer.on('error', (err) => {
-            if(err.type === 'id-taken') { location.reload(); }
+            if(err.type === 'id-taken') { /* 既にスロットが埋まっている場合などは無視 */ }
         });
     }
 
@@ -221,43 +227,73 @@
         roomListEl.innerHTML = '';
         scanStatus.innerText = "スキャン中...";
         let found = 0;
+
         for (let i = 1; i <= MAX_SLOTS; i++) {
             const targetId = SLOT_PREFIX + i;
             const checkConn = peer.connect(targetId, { reliable: true });
-            const timeout = setTimeout(() => checkConn.close(), 1500);
-            checkConn.on('open', () => {
-                clearTimeout(timeout);
-                addRoomToList(targetId, "対戦待ちのプレイヤー", i);
-                found++;
+            
+            // 2秒経っても反応がなければタイムアウト
+            const timeout = setTimeout(() => {
                 checkConn.close();
-                updateScanStatus(found);
+            }, 2000);
+
+            // ホストから名前が送られてくるのを待つ
+            checkConn.on('data', (data) => {
+                if (data.type === 'host-info') {
+                    clearTimeout(timeout);
+                    addRoomToList(targetId, data.name, i);
+                    found++;
+                    updateScanStatus(found);
+                    checkConn.close(); // 情報取得後は一旦切断
+                }
+            });
+
+            checkConn.on('error', () => {
+                clearTimeout(timeout);
+                checkConn.close();
             });
         }
+
         setTimeout(() => {
-            if (found === 0) {
+            if (found === 0 && roomListEl.innerHTML === '') {
                 roomListEl.innerHTML = '<div class="text-center py-6 text-slate-500 text-xs italic">待機中のプレイヤーはいません</div>';
                 scanStatus.innerText = "完了";
             }
-        }, 2000);
+        }, 2500);
     }
 
     function updateScanStatus(count) { scanStatus.innerText = `${count}件発見`; }
 
-    function addRoomToList(id, name, slotNum) {
+    function addRoomToList(id, hostName, slotNum) {
         if (document.querySelector(`[data-slot="${slotNum}"]`)) return;
         const div = document.createElement('div');
         div.className = "room-item bg-slate-900/40 p-4 rounded-xl flex justify-between items-center cursor-pointer animate-pop border border-white/5 transition-all";
         div.setAttribute('data-slot', slotNum);
-        div.innerHTML = `<div class="text-left"><p class="text-sm font-bold text-slate-200">Player ${slotNum}</p><p class="text-[10px] text-sky-500">対戦準備完了</p></div><span class="text-xs font-bold text-sky-400">参加する →</span>`;
-        div.onclick = () => joinRoom(id, `Player ${slotNum}`);
+        
+        // 取得したホストの名前を表示
+        div.innerHTML = `
+            <div class="text-left">
+                <p class="text-sm font-bold text-slate-200">${hostName}</p>
+                <p class="text-[10px] text-sky-500">対戦準備完了</p>
+            </div>
+            <span class="text-xs font-bold text-sky-400">参加する →</span>`;
+        
+        div.onclick = () => joinRoom(id, hostName);
         if (roomListEl.querySelector('.italic')) roomListEl.innerHTML = '';
         roomListEl.appendChild(div);
     }
 
     createRoomBtn.onclick = async () => {
-        myName = roomNameInput.value.trim() || "名無しのプレイヤー";
+        const inputVal = roomNameInput.value.trim();
+        if (!inputVal) {
+            alert("あなたの名前を入力してください");
+            return;
+        }
+        myName = inputVal;
         createRoomBtn.disabled = true;
         createRoomBtn.innerText = "空きスロットを探しています...";
+        
+        // Peerを再起動して固定IDを取得しにいく
         peer.destroy();
         for(let i=1; i <= MAX_SLOTS; i++) {
             const success = await tryBecomeHost(SLOT_PREFIX + i, myName);
@@ -275,21 +311,31 @@
                 myRole = 'O';
                 displayRoomName.innerText = name;
                 enterGameUI();
+                
                 peer.on('connection', (incomingConn) => {
                     conn = incomingConn;
+                    // 接続されたらホスト名を送信
+                    conn.on('open', () => {
+                        conn.send({ type: 'host-info', name: myName });
+                    });
                     setupGameConnection();
                 });
                 resolve(true);
             });
-            newPeer.on('error', (err) => { if(err.type === 'id-taken') { newPeer.destroy(); resolve(false); } });
+            newPeer.on('error', (err) => { 
+                if(err.type === 'id-taken') { 
+                    newPeer.destroy(); 
+                    resolve(false); 
+                } 
+            });
         });
     }
 
-    function joinRoom(targetPeerId, name) {
+    function joinRoom(targetPeerId, hostName) {
         myName = roomNameInput.value.trim() || "参加者";
         conn = peer.connect(targetPeerId, { reliable: true });
         myRole = 'X';
-        displayRoomName.innerText = name;
+        displayRoomName.innerText = hostName;
         setupGameConnection();
         enterGameUI();
     }
@@ -330,14 +376,12 @@
 
     function addChatMessage(sender, text, type) {
         const div = document.createElement('div');
-        div.className = "animate-pop flex flex-col";
-        
         const alignment = type === 'me' ? 'items-end' : (type === 'system' ? 'items-center' : 'items-start');
         const bgColor = type === 'me' ? 'bg-sky-600' : (type === 'system' ? 'bg-slate-700/50' : 'bg-slate-800');
         const textColor = type === 'system' ? 'text-slate-400 text-[10px]' : 'text-white text-xs';
         const bubbleRounding = type === 'me' ? 'rounded-l-xl rounded-tr-xl' : 'rounded-r-xl rounded-tl-xl';
         
-        div.className = `flex flex-col ${alignment} mb-2`;
+        div.className = `animate-pop flex flex-col ${alignment} mb-2`;
         div.innerHTML = `
             ${type !== 'system' ? `<span class="text-[9px] text-slate-500 mb-1 px-1">${sender}</span>` : ''}
             <div class="${bgColor} ${textColor} ${bubbleRounding} px-3 py-2 max-w-[85%] break-words shadow-sm">
